@@ -16,24 +16,30 @@ suppressPackageStartupMessages({
 })
 
 # ─── 1. 讀 .env 金鑰 ───────────────────────────────────────────────────────
+# dotenv 會把 .env 內容讀進 Sys.getenv()，這樣底層 API (riingo/fmpcloudr) 也能直接吃
 load_dot_env(".env")
 TIINGO_TOKEN <- Sys.getenv("TIINGO_TOKEN")
 FMP_API_KEY  <- Sys.getenv("FMP_API_KEY")
-riingo_set_token(TIINGO_TOKEN)
-fmpcloudr::fmpc_set_api_key(FMP_API_KEY)
 
-if (nzchar(TIINGO_TOKEN) == FALSE || nzchar(FMP_API_KEY) == FALSE) {
+# riingo 內部直接吃 Sys.getenv("RIINGO_TOKEN")
+# fmpcloudr 要顯式呼叫 fmpc_set_token()（新版不直接吃 Sys.getenv）
+# 把我們從 .env 讀到的 key 也映射到 API 套件期待的環境變數名
+Sys.setenv(RIINGO_TOKEN = TIINGO_TOKEN)
+fmpcloudr::fmpc_set_token(FMP_API_KEY)
+
+if (!nzchar(TIINGO_TOKEN) || !nzchar(FMP_API_KEY)) {
   stop("❌ API key 沒設定！請編輯 .env 填入 TIINGO_TOKEN / FMP_API_KEY")
 }
-cat("✅ API keys 載入成功\n")
+cat("✅ API keys 載入成功 (TIINGO=", nchar(TIINGO_TOKEN), "字元, FMP=", nchar(FMP_API_KEY), "字元)\n", sep = "")
 
 # ─── 2. 設定七大巨頭 ─────────────────────────────────────────────────────────
 MAGNIFICENT_7 <- c("AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA")
+# Tiingo 不支援 ^VIX 這種 Yahoo-style，用 VXX (VIX 期貨 ETF) 替代
 INDEX_TICKERS <- c(
   "SPY"  = "S&P 500 ETF",
   "QQQ"  = "Nasdaq 100 ETF",
   "DIA"  = "Dow Jones ETF",
-  "VIX"  = "Volatility Index"
+  "VXX"  = "VIX Futures (proxy)"
 )
 HISTORY_DAYS <- 180    # 抓 6 個月日線
 LOOKBACK_DAYS <- 30     # 計算近 30 天漲跌用
@@ -70,56 +76,80 @@ safe_call <- function(expr, label) {
 }
 
 # ─── 4. 抓個股 (riingo) ───────────────────────────────────────────────────
-fetch_ticker_ohlc <- function(symbol, days = HISTORY_DAYS) {
+fetch_ticker_ohlc <- function(symbol, days = HISTORY_DAYS, max_retry = 3) {
   cat(sprintf("  → %s (riingo)\n", symbol))
   end_date   <- Sys.Date()
   start_date <- end_date - days(days)
 
-  df <- riingo_prices(
-    symbol,
-    start_date = start_date,
-    end_date   = end_date,
-    resample_frequency = "daily"
-  ) %>%
-    rename(
-      date   = date,
-      open   = open,
-      high   = high,
-      low    = low,
-      close  = close,
-      volume = volume
-    ) %>%
-    mutate(date = as.character(date)) %>%
-    select(date, open, high, low, close, volume)
-
-  df
+  for (attempt in seq_len(max_retry)) {
+    res <- tryCatch(
+      riingo_prices(
+        symbol,
+        start_date = start_date,
+        end_date   = end_date,
+        resample_frequency = "daily"
+      ),
+      error = function(e) e
+    )
+    if (!inherits(res, "error")) {
+      return(
+        res %>%
+          rename(date = date) %>%
+          mutate(date = as.character(date)) %>%
+          select(date, open, high, low, close, volume)
+      )
+    }
+    msg <- conditionMessage(res)
+    cat(sprintf("    ⚠️  attempt %d 失敗: %s\n", attempt, msg))
+    if (attempt < max_retry) {
+      Sys.sleep(2 ^ attempt)  # 1s, 2s, 4s backoff
+    }
+  }
+  NULL
 }
 
 # ─── 5. 抓基本面 (FMP) ────────────────────────────────────────────────────
+# 注意：fmpcloudr 0.1.7 內建的 fmpc_security_profile() 在 FMP 2025/8/31 改版後
+# 已停用 (legacy endpoint)，所以這裡直接 call FMP 新的 stable v3 endpoint。
+# 合併兩個 endpoint 拿齊 sector/industry + marketCap/yearHigh/yearLow。
 fetch_fundamentals <- function(symbol) {
-  cat(sprintf("  → %s (fmpcloudr profile)\n", symbol))
-  prof <- safe_call(fmpcloudr::fmpc_profile(symbol), "profile")
-  if (is.null(prof) || nrow(prof) == 0) {
-    return(list(
-      symbol = symbol, companyName = symbol, sector = "N/A",
-      industry = "N/A", marketCap = NA, pe = NA, eps = NA, beta = NA
-    ))
-  }
+  cat(sprintf("  → %s (FMP /stable/profile + /stable/quote)\n", symbol))
+  base <- "https://financialmodelingprep.com/stable"
+  prof_url <- sprintf("%s/profile?symbol=%s&apikey=%s", base, symbol, FMP_API_KEY)
+  quot_url <- sprintf("%s/quote?symbol=%s&apikey=%s",   base, symbol, FMP_API_KEY)
+
+  prof <- safe_call(jsonlite::fromJSON(prof_url, simplifyVector = FALSE), "FMP profile")
+  quot <- safe_call(jsonlite::fromJSON(quot_url, simplifyVector = FALSE), "FMP quote")
+
+  p <- if (length(prof) > 0) prof[[1]] else list()
+  q <- if (length(quot) > 0) quot[[1]] else list()
+
   list(
     symbol      = symbol,
-    companyName = prof$companyName %||% symbol,
-    sector      = prof$sector      %||% "N/A",
-    industry    = prof$industry    %||% "N/A",
-    marketCap   = prof$mktCap      %||% NA_real_,
-    pe          = prof$pe          %||% NA_real_,
-    eps         = prof$eps         %||% NA_real_,
-    beta        = prof$beta        %||% NA_real_,
-    description = prof$description  %||% ""
+    companyName = p$companyName %||% q$name %||% symbol,
+    sector      = p$sector      %||% "N/A",
+    industry    = p$industry    %||% "N/A",
+    marketCap   = as.numeric(q$marketCap) %||% as.numeric(p$mktCap) %||% NA_real_,
+    pe          = as.numeric(q$pe)         %||% as.numeric(p$pe)     %||% NA_real_,
+    eps         = as.numeric(p$eps)                                    %||% NA_real_,
+    beta        = as.numeric(p$beta)                                  %||% NA_real_,
+    yearHigh    = as.numeric(q$yearHigh)                              %||% NA_real_,
+    yearLow     = as.numeric(q$yearLow)                               %||% NA_real_,
+    priceAvg50  = as.numeric(q$priceAvg50)                            %||% NA_real_,
+    priceAvg200 = as.numeric(q$priceAvg200)                           %||% NA_real_,
+    exchange    = q$exchange %||% "N/A",
+    description = p$description %||% ""
   )
 }
 
-# `%||%` for missing values
-`%||%` <- function(a, b) if (is.null(a) || is.na(a) || a == "") b else a
+# `%||%` for missing values — 用 vapply + 簡化版避免 length>1 的 NA 問題
+`%||%` <- function(a, b) {
+  if (is.null(a)) return(b)
+  if (length(a) == 0) return(b)
+  if (is.atomic(a) && length(a) == 1 && is.na(a)) return(b)
+  if (is.character(a) && a == "") return(b)
+  a
+}
 
 # ─── 6. 抓大盤指數 ────────────────────────────────────────────────────────
 fetch_market_overview <- function() {
@@ -190,12 +220,17 @@ build_ticker_payload <- function(symbol) {
       low52w  = round(low_52w, 2)
     ),
     fundamentals = list(
-      sector    = fund$sector,
-      industry  = fund$industry,
-      marketCap = fund$marketCap,
-      pe        = fund$pe,
-      eps       = fund$eps,
-      beta      = fund$beta
+      sector      = fund$sector,
+      industry    = fund$industry,
+      exchange    = fund$exchange,
+      marketCap   = fund$marketCap,
+      pe          = fund$pe,
+      eps         = fund$eps,
+      beta        = fund$beta,
+      yearHigh    = fund$yearHigh,
+      yearLow     = fund$yearLow,
+      priceAvg50  = fund$priceAvg50,
+      priceAvg200 = fund$priceAvg200
     ),
     ohlc = ohlc %>% mutate(across(everything(), as.character))
   )
@@ -218,7 +253,7 @@ write_json(overview, "data/market_snapshot.json")
 cat("\n[2/3] 個股 OHLC + 基本面\n")
 for (sym in MAGNIFICENT_7) {
   build_ticker_payload(sym)
-  Sys.sleep(0.3)  # 禮貌性 delay，避免打爆免費 API
+  Sys.sleep(0.8)  # 禮貌性 delay，避免打爆免費 API (Tiingo 500 req/hr)
 }
 
 # 8.3 寫入最後更新時間 + 索引
