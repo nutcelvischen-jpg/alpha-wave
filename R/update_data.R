@@ -76,7 +76,8 @@ safe_call <- function(expr, label) {
 }
 
 # ─── 4. 抓個股 (riingo) ───────────────────────────────────────────────────
-fetch_ticker_ohlc <- function(symbol, days = HISTORY_DAYS, max_retry = 3) {
+# 額度保護：如果遇到 429 立刻放棄整輪，不浪費剩餘 hourly quota
+fetch_ticker_ohlc <- function(symbol, days = HISTORY_DAYS, max_retry = 2) {
   cat(sprintf("  → %s (riingo)\n", symbol))
   end_date   <- Sys.Date()
   start_date <- end_date - days(days)
@@ -100,14 +101,15 @@ fetch_ticker_ohlc <- function(symbol, days = HISTORY_DAYS, max_retry = 3) {
       )
     }
     msg <- conditionMessage(res)
-    cat(sprintf("    ⚠️  attempt %d 失敗: %s\n", attempt, msg))
-    if (attempt < max_retry) {
-      Sys.sleep(2 ^ attempt)  # 1s, 2s, 4s backoff
+    # 429 立刻跳過，不重試
+    if (grepl("429|allocation|run over", msg, ignore.case = TRUE)) {
+      stop("RATE_LIMITED_429")
     }
+    cat(sprintf("    ⚠️  attempt %d 失敗: %s\n", attempt, msg))
+    if (attempt < max_retry) Sys.sleep(2 ^ attempt)
   }
   NULL
 }
-
 # ─── 5. 抓基本面 (FMP) ────────────────────────────────────────────────────
 # 注意：fmpcloudr 0.1.7 內建的 fmpc_security_profile() 在 FMP 2025/8/31 改版後
 # 已停用 (legacy endpoint)，所以這裡直接 call FMP 新的 stable v3 endpoint。
@@ -250,13 +252,36 @@ cat("═════════════════════════
 
 # 8.1 大盤
 cat("[1/3] 大盤指數\n")
-overview <- fetch_market_overview()
-write_json(overview, "data/market_snapshot.json")
+overview <- tryCatch(
+  fetch_market_overview(),
+  error = function(e) {
+    if (grepl("RATE_LIMITED_429", e$message)) {
+      cat("\n🛑 偵測到 Tiingo 額度限制 (429)，中止整輪抓取，明日 cron 再跑\n")
+      quit(status = 0)  # 正常 exit，不算失敗
+    }
+    NULL
+  }
+)
+if (is.null(overview) || length(overview) == 0) {
+  cat("⚠️  大盤指數抓不到，明天 cron 再試\n")
+} else {
+  write_json(overview, "data/market_snapshot.json")
+}
 
 # 8.2 七大巨頭
 cat("\n[2/3] 個股 OHLC + 基本面\n")
 for (sym in MAGNIFICENT_7) {
-  build_ticker_payload(sym)
+  result <- tryCatch(
+    build_ticker_payload(sym),
+    error = function(e) {
+      if (grepl("RATE_LIMITED_429", e$message)) {
+        cat("  🛑 額度爆了，明日 cron 再跑\n")
+        return("STOP")
+      }
+      NULL
+    }
+  )
+  if (identical(result, "STOP")) break
   Sys.sleep(0.8)  # 禮貌性 delay，避免打爆免費 API (Tiingo 500 req/hr)
 }
 
