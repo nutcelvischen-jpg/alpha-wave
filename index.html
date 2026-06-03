@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Alpha Wave — Magnificent 7 Dashboard</title>
+  <meta name="description" content="Real-time dashboard for Apple, Microsoft, NVIDIA, Amazon, Alphabet, Meta, Tesla. Powered by R + GitHub Pages." />
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Chart.js for K-line / candlestick -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial@0.2.1/dist/chartjs-chart-financial.min.js"></script>
+  <!-- Google Fonts: 新聞襯線 + 現代無襯線 -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            serif: ['"Playfair Display"', 'Georgia', 'serif'],
+            sans:  ['"Inter"', 'system-ui', 'sans-serif'],
+            mono:  ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
+          },
+          colors: {
+            bull:    { DEFAULT: '#0a7d3b', soft: '#dcfce7' },
+            bear:    { DEFAULT: '#b91c1c', soft: '#fee2e2' },
+            ink:     '#111111',
+            paper:   '#fbfaf6',
+            rule:    '#1f2937',
+            muted:   '#6b7280',
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    body { background: #fbfaf6; color: #111; }
+    .newspaper-rule { border-top: 3px double #111; }
+    .thin-rule { border-top: 1px solid #111; }
+    .section-rule { border-top: 1px solid #111; border-bottom: 1px solid #111; }
+    .ticker-pill.active { background: #111; color: #fbfaf6; }
+    .ticker-pill:hover { background: #374151; color: #fbfaf6; }
+    .ticker-pill {
+      transition: all 0.15s ease;
+      cursor: pointer;
+    }
+    /* 報頭小字 */
+    .kicker { font-family: 'Inter', sans-serif; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; font-size: 0.7rem; }
+    /* K 線圖容器 */
+    .chart-shell { background: #fff; border: 1px solid #111; }
+    /* loading */
+    .skeleton { background: linear-gradient(90deg, #e5e7eb 0%, #f3f4f6 50%, #e5e7eb 100%); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
+    @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+    /* 報頭裝飾 */
+    .ornament::before, .ornament::after { content: "❦"; margin: 0 0.5rem; color: #b91c1c; }
+    /* 列印友善 */
+    @media print { .no-print { display: none; } }
+  </style>
+</head>
+
+<body class="font-sans antialiased">
+
+  <!-- ==================== 報頭 ==================== -->
+  <header class="border-b-4 border-ink">
+    <div class="max-w-7xl mx-auto px-4 py-6">
+      <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
+        <div>
+          <div class="kicker text-muted">Vol. I · No. 1 · <span id="today-date">—</span></div>
+          <h1 class="font-serif text-5xl md:text-7xl font-black leading-none tracking-tight">
+            Alpha<span class="text-red-700">·</span>Wave
+          </h1>
+          <div class="kicker text-muted mt-2 ornament">Magnificent Seven Daily · Powered by R</div>
+        </div>
+        <div class="text-right text-sm">
+          <div class="kicker text-muted">Last Update</div>
+          <div id="last-update" class="font-mono text-base">loading…</div>
+          <div class="kicker text-muted mt-2">Data · Tiingo + FMP</div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ==================== 大盤指數 ==================== -->
+  <section class="max-w-7xl mx-auto px-4 py-6">
+    <h2 class="font-serif text-2xl font-bold mb-3 section-rule pb-1">▌Market Pulse</h2>
+    <div id="market-grid" class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <!-- 由 JS 注入 -->
+    </div>
+  </section>
+
+  <!-- ==================== 個股選擇 + 詳細 ==================== -->
+  <main class="max-w-7xl mx-auto px-4 pb-12">
+
+    <h2 class="font-serif text-2xl font-bold mb-4 section-rule pb-1">▌The Magnificent Seven</h2>
+
+    <!-- 七大巨頭按鈕列 -->
+    <div id="ticker-tabs" class="flex flex-wrap gap-2 mb-6 no-print"></div>
+
+    <!-- 報頭式個股資訊 -->
+    <article id="ticker-feature" class="grid md:grid-cols-3 gap-6 mb-8">
+      <!-- 左：個股名+價 -->
+      <div class="md:col-span-1">
+        <div class="kicker text-muted" id="ticker-sector">—</div>
+        <h3 id="ticker-name" class="font-serif text-4xl font-black mt-1 leading-none">—</h3>
+        <div class="font-mono text-5xl font-bold mt-3" id="ticker-price">—</div>
+        <div class="flex items-center gap-3 mt-2">
+          <span id="ticker-change-abs" class="font-mono text-xl">—</span>
+          <span id="ticker-change-pct" class="font-mono text-xl px-2 py-0.5">—</span>
+        </div>
+        <div class="kicker text-muted mt-4" id="ticker-date">—</div>
+      </div>
+
+      <!-- 中：K 線圖 -->
+      <div class="md:col-span-2 chart-shell p-3">
+        <canvas id="kline-chart" height="320"></canvas>
+      </div>
+    </article>
+
+    <!-- 基本面資料表 -->
+    <section class="grid md:grid-cols-2 gap-6">
+      <div>
+        <h3 class="font-serif text-xl font-bold thin-rule pb-1 mb-3">Fundamentals</h3>
+        <table class="w-full text-sm" id="fundamentals-table">
+          <tbody>
+            <tr class="border-b border-gray-200"><td class="py-2 text-muted">Sector</td><td class="py-2 font-semibold text-right" id="f-sector">—</td></tr>
+            <tr class="border-b border-gray-200"><td class="py-2 text-muted">Industry</td><td class="py-2 font-semibold text-right" id="f-industry">—</td></tr>
+            <tr class="border-b border-gray-200"><td class="py-2 text-muted">Market Cap</td><td class="py-2 font-mono font-semibold text-right" id="f-mktcap">—</td></tr>
+            <tr class="border-b border-gray-200"><td class="py-2 text-muted">P/E</td><td class="py-2 font-mono font-semibold text-right" id="f-pe">—</td></tr>
+            <tr class="border-b border-gray-200"><td class="py-2 text-muted">EPS</td><td class="py-2 font-mono font-semibold text-right" id="f-eps">—</td></tr>
+            <tr class="border-b border-gray-200"><td class="py-2 text-muted">Beta</td><td class="py-2 font-mono font-semibold text-right" id="f-beta">—</td></tr>
+            <tr><td class="py-2 text-muted">52w High / Low</td><td class="py-2 font-mono font-semibold text-right" id="f-range">—</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div>
+        <h3 class="font-serif text-xl font-bold thin-rule pb-1 mb-3">Today's Quote</h3>
+        <table class="w-full text-sm">
+          <tbody>
+            <tr class="border-b border-gray-200"><td class="py-2 text-muted">Open</td><td class="py-2 font-mono font-semibold text-right" id="q-open">—</td></tr>
+            <tr class="border-b border-gray-200"><td class="py-2 text-muted">High</td><td class="py-2 font-mono font-semibold text-right" id="q-high">—</td></tr>
+            <tr class="border-b border-gray-200"><td class="py-2 text-muted">Low</td><td class="py-2 font-mono font-semibold text-right" id="q-low">—</td></tr>
+            <tr class="border-b border-gray-200"><td class="py-2 text-muted">Close</td><td class="py-2 font-mono font-semibold text-right" id="q-close">—</td></tr>
+            <tr class="border-b border-gray-200"><td class="py-2 text-muted">Volume</td><td class="py-2 font-mono font-semibold text-right" id="q-volume">—</td></tr>
+            <tr><td class="py-2 text-muted">Previous Close</td><td class="py-2 font-mono font-semibold text-right" id="q-prev">—</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <!-- ==================== 頁尾 ==================== -->
+  <footer class="newspaper-rule">
+    <div class="max-w-7xl mx-auto px-4 py-6 text-sm text-muted flex flex-col md:flex-row md:justify-between gap-2">
+      <div>© <span id="year"></span> Alpha Wave · Built by 赫哥 for 老大</div>
+      <div class="kicker">Not financial advice · Past performance ≠ future results</div>
+    </div>
+  </footer>
+
+  <!-- ==================== JS ==================== -->
+  <script>
+    // 設定 Chart.js 全域 (v4 預設時間軸已不內建，要 financial chart 自己提供 scale)
+    Chart.register(
+      Chart.controllers.CandlestickController,
+      Chart.elements.CandlestickElement
+    );
+    Chart.defaults.font.family = '"Inter", system-ui, sans-serif';
+    Chart.defaults.color = '#111';
+
+    const BASE = './data';   // GitHub Pages 相對路徑
+    const META = { generatedAt: null, tickers: [], market: [] };
+    let currentChart = null;
+    let currentSymbol = 'AAPL';
+
+    // ─── 工具 ───
+    const $ = id => document.getElementById(id);
+    const fmt = (n, d = 2) => (n == null || isNaN(n)) ? '—' : Number(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+    const fmtInt = n => (n == null || isNaN(n)) ? '—' : Math.round(n).toLocaleString('en-US');
+    const fmtMktCap = n => {
+      if (n == null || isNaN(n)) return '—';
+      if (n >= 1e12) return '$' + (n/1e12).toFixed(2) + 'T';
+      if (n >= 1e9)  return '$' + (n/1e9).toFixed(2)  + 'B';
+      if (n >= 1e6)  return '$' + (n/1e6).toFixed(2)  + 'M';
+      return '$' + Number(n).toLocaleString();
+    };
+    const sign = n => (n >= 0 ? '+' : '') + fmt(n);
+    const cls = n => (n >= 0 ? 'text-bull' : 'text-bear');
+    const pillCls = n => (n >= 0 ? 'bg-bull-soft text-bull' : 'bg-bear-soft text-bear');
+
+    async function jget(path) {
+      const r = await fetch(`${BASE}/${path}`, { cache: 'no-store' });
+      if (!r.ok) throw new Error(`fetch ${path} → ${r.status}`);
+      return r.json();
+    }
+
+    // ─── 報頭日期 ───
+    function setHeaderDate() {
+      const now = new Date();
+      $('today-date').textContent = now.toLocaleDateString('en-US',
+        { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+      $('year').textContent = now.getFullYear();
+    }
+
+    // ─── 大盤指數 ───
+    async function renderMarket() {
+      const data = await jget('market_snapshot.json');
+      const grid = $('market-grid');
+      grid.innerHTML = Object.entries(data).map(([sym, d]) => `
+        <div class="border border-ink p-3 bg-white">
+          <div class="kicker text-muted">${d.name}</div>
+          <div class="font-mono text-2xl font-bold">${fmt(d.last)}</div>
+          <div class="font-mono text-sm ${cls(d.change)}">${sign(d.change)} (${sign(d.changePct)}%)</div>
+        </div>
+      `).join('');
+    }
+
+    // ─── 七大巨頭按鈕 ───
+    function renderTabs() {
+      const wrap = $('ticker-tabs');
+      wrap.innerHTML = META.tickers.map(s => `
+        <button data-sym="${s}"
+                class="ticker-pill border border-ink px-4 py-1.5 font-mono font-bold text-sm rounded-none">
+          ${s}
+        </button>
+      `).join('');
+      wrap.querySelectorAll('button').forEach(b => {
+        b.addEventListener('click', () => {
+          currentSymbol = b.dataset.sym;
+          wrap.querySelectorAll('button').forEach(x => x.classList.remove('active'));
+          b.classList.add('active');
+          loadTicker(currentSymbol);
+        });
+      });
+      wrap.querySelector('button').classList.add('active');
+    }
+
+    // ─── 載入個股詳細 ───
+    async function loadTicker(sym) {
+      try {
+        const d = await jget(`tickers/${sym}.json`);
+        const q = d.quote, f = d.fundamentals, r = d.range, m = d.meta;
+
+        $('ticker-sector').textContent  = (f.sector || '—').toUpperCase();
+        $('ticker-name').textContent    = m.companyName || sym;
+        $('ticker-price').textContent   = '$' + fmt(q.close);
+        $('ticker-change-abs').textContent = sign(q.change);
+        $('ticker-change-abs').className = 'font-mono text-xl ' + cls(q.change);
+        $('ticker-change-pct').textContent = sign(q.changePct) + '%';
+        $('ticker-change-pct').className = 'font-mono text-xl px-2 py-0.5 ' + pillCls(q.change);
+        $('ticker-date').textContent = 'as of ' + q.date;
+
+        $('f-sector').textContent   = f.sector   || '—';
+        $('f-industry').textContent = f.industry || '—';
+        $('f-mktcap').textContent   = fmtMktCap(f.marketCap);
+        $('f-pe').textContent       = (f.pe  == null || isNaN(f.pe))  ? '—' : fmt(f.pe);
+        $('f-eps').textContent      = (f.eps == null || isNaN(f.eps)) ? '—' : '$' + fmt(f.eps);
+        $('f-beta').textContent     = (f.beta == null || isNaN(f.beta)) ? '—' : fmt(f.beta, 2);
+        $('f-range').textContent    = `${fmt(r.high52w)} / ${fmt(r.low52w)}`;
+
+        $('q-open').textContent   = '$' + fmt(q.open);
+        $('q-high').textContent   = '$' + fmt(q.high);
+        $('q-low').textContent    = '$' + fmt(q.low);
+        $('q-close').textContent  = '$' + fmt(q.close);
+        $('q-volume').textContent = fmtInt(q.volume);
+        $('q-prev').textContent   = '$' + fmt(q.prevClose);
+
+        drawKline(d.ohlc);
+      } catch (e) {
+        console.error(e);
+        $('ticker-name').textContent = `${sym} 載入失敗`;
+      }
+    }
+
+    // ─── K 線圖 (Chart.js financial) ───
+    function drawKline(rows) {
+      const ctx = $('kline-chart').getContext('2d');
+      const data = rows.map(r => ({
+        x: r.date,
+        o: +r.open, h: +r.high, l: +r.low, c: +r.close
+      }));
+
+      if (currentChart) currentChart.destroy();
+      currentChart = new Chart(ctx, {
+        type: 'candlestick',
+        data: {
+          datasets: [{
+            label: currentSymbol,
+            data,
+            borderColor: '#111',
+            color: {
+              up:        '#0a7d3b',
+              down:      '#b91c1c',
+              unchanged: '#6b7280',
+            },
+            borderColor: {
+              up:        '#0a7d3b',
+              down:      '#b91c1c',
+              unchanged: '#6b7280',
+            }
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              backgroundColor: '#111',
+              titleFont: { family: '"JetBrains Mono"', size: 12 },
+              bodyFont:  { family: '"JetBrains Mono"', size: 12 },
+              callbacks: {
+                label: ctx => {
+                  const r = ctx.raw;
+                  return [` O: ${r.o.toFixed(2)}`,
+                          ` H: ${r.h.toFixed(2)}`,
+                          ` L: ${r.l.toFixed(2)}`,
+                          ` C: ${r.c.toFixed(2)}`];
+                }
+              }
+            }
+          },
+          scales: {
+            x: {
+              type: 'timeseries',
+              time: { unit: 'month' },
+              ticks: { font: { family: '"JetBrains Mono"' } },
+              grid:  { color: 'rgba(0,0,0,0.05)' }
+            },
+            y: {
+              ticks: { font: { family: '"JetBrains Mono"' } },
+              grid:  { color: 'rgba(0,0,0,0.05)' }
+            }
+          }
+        }
+      });
+    }
+
+    // ─── Bootstrap ───
+    (async () => {
+      setHeaderDate();
+      try {
+        const idx  = await jget('index.json');
+        Object.assign(META, idx);
+        $('last-update').textContent = idx.generatedAt || '—';
+
+        await renderMarket();
+        renderTabs();
+        await loadTicker(currentSymbol);
+      } catch (e) {
+        console.error('Bootstrap failed:', e);
+        $('last-update').textContent = '尚未產生資料，請先跑 R/update_data.R';
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,64 @@
+# =============================================================
+# Alpha Wave — .gitignore
+# =============================================================
+
+# === 1. R 環境 ===
+.Rproj.user/
+.Rhistory
+.RData
+.Rapp.history
+.Ruserdata
+*.utf8.md
+*.knit.md
+.Renviron
+renv/library/
+renv/local/
+renv/cellar/
+renv/lock/
+renv/python/
+renv/staging/
+renv/installed.rds
+renv/installed.packages.rds
+renv/settings.dcf  # 如果你想把設定公開就別 ignore
+
+# === 2. 金鑰與環境變數（最重要：絕對不能推上去）===
+.env
+.env.*
+!.env.example
+*.Renviron
+api_keys.R
+secrets/
+config/local.yml
+
+# === 3. R 抓下來的快取 ===
+R/cache/
+*.rds
+*.RData
+*.qs2
+*.qs
+
+# === 4. 系統垃圾 ===
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.iml
+.cursor/
+
+# === 5. 資料檔（看老大要不要上 GitHub — 預設上，方便初次部署就有東西看）===
+# 如果想隱私，把下一行取消註解：
+# data/*.json
+# 但 data/market_snapshot.json 跟 data/tickers/*.json 會留著（給 GitHub Pages 用）
+data/cache/
+
+# === 6. Node / Frontend build（目前不用，未來可能加）===
+node_modules/
+dist/
+build/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
