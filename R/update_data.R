@@ -156,8 +156,11 @@ fetch_market_overview <- function() {
   cat("  → 大盤指數\n")
   result <- list()
   for (sym in names(INDEX_TICKERS)) {
-    df <- safe_call(fetch_ticker_ohlc(sym, days = LOOKBACK_DAYS),
-                    paste0("index ", sym))
+    cat(sprintf("    · %s\n", sym))
+    df <- tryCatch(
+      fetch_ticker_ohlc(sym, days = LOOKBACK_DAYS),
+      error = function(e) { cat(sprintf("      ⚠️  %s\n", e$message)); NULL }
+    )
     if (is.null(df) || nrow(df) == 0) next
 
     latest   <- df %>% slice_tail(n = 1)
@@ -174,6 +177,7 @@ fetch_market_overview <- function() {
       date      = latest$date
     )
   }
+  cat(sprintf("  📊 成功 %d / %d 個指數\n", length(result), length(INDEX_TICKERS)))
   result
 }
 

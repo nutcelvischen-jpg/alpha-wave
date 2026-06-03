@@ -1,1 +1,1 @@
-[]
+{"SPY":{"name":"S&P 500 ETF","last":523.42,"prevClose":519.11,"change":4.31,"changePct":0.83,"date":"2026-06-02"},"QQQ":{"name":"Nasdaq 100 ETF","last":453.10,"prevClose":447.20,"change":5.90,"changePct":1.32,"date":"2026-06-02"},"DIA":{"name":"Dow Jones ETF","last":394.55,"prevClose":391.81,"change":2.74,"changePct":0.70,"date":"2026-06-02"},"VXX":{"name":"VIX Futures (proxy)","last":56.30,"prevClose":57.95,"change":-1.65,"changePct":-2.85,"date":"2026-06-02"}}
