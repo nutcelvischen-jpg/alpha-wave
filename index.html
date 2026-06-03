@@ -8,10 +8,7 @@
 
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
-  <!-- Chart.js for K-line / candlestick -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial@0.2.1/dist/chartjs-chart-financial.min.js"></script>
+  <!-- No external charting lib — we draw K-line ourselves in inline SVG (more reliable, smaller, more newspaper-like) -->
   <!-- Google Fonts: 新聞襯線 + 現代無襯線 -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -118,7 +115,9 @@
 
       <!-- 中：K 線圖 -->
       <div class="md:col-span-2 chart-shell p-3">
-        <canvas id="kline-chart" height="320"></canvas>
+        <svg id="kline-svg" viewBox="0 0 800 360" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;display:block;">
+          <text x="400" y="180" text-anchor="middle" font-family="Inter" font-size="14" fill="#6b7280">Loading chart…</text>
+        </svg>
       </div>
     </article>
 
@@ -165,17 +164,8 @@
 
   <!-- ==================== JS ==================== -->
   <script>
-    // 設定 Chart.js 全域 (v4 預設時間軸已不內建，要 financial chart 自己提供 scale)
-    Chart.register(
-      Chart.controllers.CandlestickController,
-      Chart.elements.CandlestickElement
-    );
-    Chart.defaults.font.family = '"Inter", system-ui, sans-serif';
-    Chart.defaults.color = '#111';
-
     const BASE = './data';   // GitHub Pages 相對路徑
     const META = { generatedAt: null, tickers: [], market: [] };
-    let currentChart = null;
     let currentSymbol = 'AAPL';
 
     // ─── 工具 ───
@@ -277,68 +267,89 @@
       }
     }
 
-    // ─── K 線圖 (Chart.js financial) ───
+    // ─── K 線圖 (自製 SVG，零依賴、報紙風) ──────────────────────────────
     function drawKline(rows) {
-      const ctx = $('kline-chart').getContext('2d');
-      const data = rows.map(r => ({
-        x: r.date,
-        o: +r.open, h: +r.high, l: +r.low, c: +r.close
-      }));
+      const svg = $('kline-svg');
+      if (!rows || rows.length === 0) {
+        svg.innerHTML = '<text x="400" y="180" text-anchor="middle" font-family="Inter" font-size="14" fill="#6b7280">No data</text>';
+        return;
+      }
+      const W = 800, H = 360;
+      const PAD = { l: 50, r: 60, t: 20, b: 30 };
+      const innerW = W - PAD.l - PAD.r;
+      const innerH = H - PAD.t - PAD.b;
 
-      if (currentChart) currentChart.destroy();
-      currentChart = new Chart(ctx, {
-        type: 'candlestick',
-        data: {
-          datasets: [{
-            label: currentSymbol,
-            data,
-            borderColor: '#111',
-            color: {
-              up:        '#0a7d3b',
-              down:      '#b91c1c',
-              unchanged: '#6b7280',
-            },
-            borderColor: {
-              up:        '#0a7d3b',
-              down:      '#b91c1c',
-              unchanged: '#6b7280',
-            }
-          }]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: {
-            legend: { display: false },
-            tooltip: {
-              backgroundColor: '#111',
-              titleFont: { family: '"JetBrains Mono"', size: 12 },
-              bodyFont:  { family: '"JetBrains Mono"', size: 12 },
-              callbacks: {
-                label: ctx => {
-                  const r = ctx.raw;
-                  return [` O: ${r.o.toFixed(2)}`,
-                          ` H: ${r.h.toFixed(2)}`,
-                          ` L: ${r.l.toFixed(2)}`,
-                          ` C: ${r.c.toFixed(2)}`];
-                }
-              }
-            }
-          },
-          scales: {
-            x: {
-              type: 'timeseries',
-              time: { unit: 'month' },
-              ticks: { font: { family: '"JetBrains Mono"' } },
-              grid:  { color: 'rgba(0,0,0,0.05)' }
-            },
-            y: {
-              ticks: { font: { family: '"JetBrains Mono"' } },
-              grid:  { color: 'rgba(0,0,0,0.05)' }
-            }
-          }
-        }
+      const parsed = rows.map(r => ({
+        date: new Date(r.date),
+        o: +r.open, h: +r.high, l: +r.low, c: +r.close,
+        v: +r.volume
+      }));
+      // 只取最近 ~90 根 K 棒避免太擠
+      const data = parsed.slice(-90);
+
+      const minLow  = Math.min(...data.map(d => d.l));
+      const maxHigh = Math.max(...data.map(d => d.h));
+      const yPad    = (maxHigh - minLow) * 0.05 || 1;
+      const yMin    = minLow - yPad;
+      const yMax    = maxHigh + yPad;
+      const yScale  = y => PAD.t + innerH - ((y - yMin) / (yMax - yMin)) * innerH;
+      const xStep   = innerW / data.length;
+      const candleW = Math.max(2, xStep * 0.6);
+
+      // 水平 grid + Y 軸 label
+      const yTicks = 5;
+      let svgParts = [];
+      svgParts.push(`<rect x="0" y="0" width="${W}" height="${H}" fill="#ffffff"/>`);
+
+      for (let i = 0; i <= yTicks; i++) {
+        const v  = yMin + (yMax - yMin) * (1 - i / yTicks);
+        const yy = yScale(v);
+        svgParts.push(`<line x1="${PAD.l}" y1="${yy}" x2="${W - PAD.r}" y2="${yy}" stroke="#e5e7eb" stroke-width="0.5"/>`);
+        svgParts.push(`<text x="${PAD.l - 6}" y="${yy + 3}" text-anchor="end" font-family="JetBrains Mono" font-size="10" fill="#6b7280">${v.toFixed(2)}</text>`);
+      }
+
+      // X 軸月份 label（每月一格）
+      const seenMonths = new Set();
+      data.forEach((d, i) => {
+        const mkey = d.date.getFullYear() + '-' + d.date.getMonth();
+        if (seenMonths.has(mkey)) return;
+        seenMonths.add(mkey);
+        const x = PAD.l + xStep * i + xStep / 2;
+        const mname = d.date.toLocaleString('en-US', { month: 'short' });
+        svgParts.push(`<line x1="${x}" y1="${PAD.t + innerH}" x2="${x}" y2="${PAD.t + innerH + 4}" stroke="#111" stroke-width="0.5"/>`);
+        svgParts.push(`<text x="${x}" y="${PAD.t + innerH + 18}" text-anchor="middle" font-family="Inter" font-size="10" fill="#6b7280">${mname}</text>`);
       });
+
+      // 蠟燭
+      data.forEach((d, i) => {
+        const x      = PAD.l + xStep * i + xStep / 2;
+        const yO     = yScale(d.o);
+        const yC     = yScale(d.c);
+        const yH     = yScale(d.h);
+        const yL     = yScale(d.l);
+        const bull   = d.c >= d.o;
+        const color  = bull ? '#0a7d3b' : '#b91c1c';
+        const fill   = bull ? '#0a7d3b' : '#b91c1c';
+
+        // 影線 (wick)
+        svgParts.push(`<line x1="${x}" y1="${yH}" x2="${x}" y2="${yL}" stroke="${color}" stroke-width="1"/>`);
+        // 實體 (body)
+        const bodyTop = Math.min(yO, yC);
+        const bodyH   = Math.max(1, Math.abs(yC - yO));
+        svgParts.push(`<rect x="${x - candleW/2}" y="${bodyTop}" width="${candleW}" height="${bodyH}" fill="${fill}" stroke="${color}" stroke-width="0.5"/>`);
+      });
+
+      // 最新價標記 (右側軸)
+      const last = data[data.length - 1];
+      const yLast = yScale(last.c);
+      svgParts.push(`<line x1="${PAD.l}" y1="${yLast}" x2="${W - PAD.r}" y2="${yLast}" stroke="#111" stroke-width="0.5" stroke-dasharray="3,3" opacity="0.4"/>`);
+      svgParts.push(`<rect x="${W - PAD.r + 2}" y="${yLast - 9}" width="${PAD.r - 4}" height="18" fill="${last.c >= last.o ? '#0a7d3b' : '#b91c1c'}"/>`);
+      svgParts.push(`<text x="${W - PAD.r + (PAD.r - 4)/2}" y="${yLast + 3}" text-anchor="middle" font-family="JetBrains Mono" font-size="11" font-weight="600" fill="#fff">${last.c.toFixed(2)}</text>`);
+
+      // 標題
+      svgParts.push(`<text x="${PAD.l}" y="${14}" font-family="Inter" font-size="11" font-weight="600" fill="#111">${currentSymbol} · 6-month daily · ${data.length} bars</text>`);
+
+      svg.innerHTML = svgParts.join('');
     }
 
     // ─── Bootstrap ───
