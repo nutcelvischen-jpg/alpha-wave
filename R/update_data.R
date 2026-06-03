@@ -101,8 +101,9 @@ fetch_ticker_ohlc <- function(symbol, days = HISTORY_DAYS, max_retry = 2) {
       )
     }
     msg <- conditionMessage(res)
-    # 429 立刻跳過，不重試
-    if (grepl("429|allocation|run over", msg, ignore.case = TRUE)) {
+    # 429 立刻跳過，不重試 — riingo 內部 retry 完會丟這個訊息
+    if (grepl("429|allocation|run over|all tickers failed", msg, ignore.case = TRUE)) {
+      cat(sprintf("    🛑 額度爆了 (riingo): %s\n", msg))
       stop("RATE_LIMITED_429")
     }
     cat(sprintf("    ⚠️  attempt %d 失敗: %s\n", attempt, msg))
@@ -161,7 +162,11 @@ fetch_market_overview <- function() {
     cat(sprintf("    · %s\n", sym))
     df <- tryCatch(
       fetch_ticker_ohlc(sym, days = LOOKBACK_DAYS),
-      error = function(e) { cat(sprintf("      ⚠️  %s\n", e$message)); NULL }
+      error = function(e) {
+        cat(sprintf("      ⚠️  %s\n", e$message))
+        if (grepl("RATE_LIMITED_429", e$message)) stop(e)
+        NULL
+      }
     )
     if (is.null(df) || nrow(df) == 0) next
 
